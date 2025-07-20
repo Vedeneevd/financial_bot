@@ -92,18 +92,38 @@ asset_groups = {
 }
 
 
-# Красивое приветствие с эмодзи
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
+# Главное меню
+async def show_start_menu(message: types.Message):
     welcome_text = f"""
 {bold(f'{EMOJI["chart"]} Финансовый трекер')}
 
 Привет, {message.from_user.first_name}! 
 Я помогу тебе вести учет твоих активов и инвестиций.
 
-{italic('Выбери категорию актива:')}
+{italic('Выбери действие:')}
 """
 
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Добавить актив")],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Выберите действие..."
+    )
+
+    await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+
+
+# Команда /start
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message, state: FSMContext):
+    await show_start_menu(message)
+
+
+# Обработчик кнопки "Добавить актив"
+@dp.message(F.text == "Добавить актив")
+async def add_asset(message: types.Message, state: FSMContext):
+    await state.set_state(Form.choose_asset_group)
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=group)] for group in asset_groups.keys()
@@ -111,9 +131,11 @@ async def cmd_start(message: types.Message, state: FSMContext):
         resize_keyboard=True,
         input_field_placeholder="Выберите категорию..."
     )
-
-    await state.set_state(Form.choose_asset_group)
-    await message.answer(welcome_text, reply_markup=keyboard, parse_mode="HTML")
+    await message.answer(
+        f"{EMOJI['chart']} {bold('Выберите категорию актива:')}",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
 
 
 # Обработчик выбора группы активов
@@ -286,37 +308,42 @@ async def process_image_url(message: types.Message, state: FSMContext):
 {EMOJI['camera']} {bold('Изображение:')} {'Есть' if message.text != '-' else 'Нет'}
 """
 
-    await message.answer(summary_text, parse_mode="HTML")
-
-    # Подготовка данных для Google Sheets (точно по вашим столбцам)
+    # Подготовка данных для Google Sheets
     row_data = [
-        data.get('asset_name', ''),  # Столбец A - Название актива
-        data.get('asset_amount', ''),  # Столбец B - Количество
-        data.get('entry_date', ''),  # Столбец C - Дата входа/покупки
-        data.get('entry_price', ''),  # Столбец D - Цена входа/покупки
-        data.get('exit_date', ''),  # Столбец E - Дата выхода/продажи
-        data.get('exit_price', ''),  # Столбец F - Цена выхода/продажи
-        message.text if message.text != '-' else ''  # Столбец G - Ссылка на изображение
+        data.get('asset_name', ''),
+        data.get('asset_amount', ''),
+        data.get('entry_date', ''),
+        data.get('entry_price', ''),
+        data.get('exit_date', ''),
+        data.get('exit_price', ''),
+        message.text if message.text != '-' else ''
     ]
 
     try:
-        # Получаем список всех строк
         all_values = sheet.get_all_values()
-
-        # Если лист пустой, добавляем заголовки
         if not all_values:
             sheet.append_row([
-                "Название актива",
-                "Количество",
-                "Дата входа/покупки",
-                "Цена входа/покупки",
-                "Дата выхода/продажи",
-                "Цена выхода/продажи",
-                "Ссылка на изображение"
+                "Название актива", "Количество", "Дата входа/покупки",
+                "Цена входа/покупки", "Дата выхода/продажи",
+                "Цена выхода/продажи", "Ссылка на изображение"
             ])
-
-        # Добавляем новые данные
         sheet.append_row(row_data)
+
+        await message.answer(summary_text, parse_mode="HTML")
+
+        # Предлагаем добавить ещё одну запись
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="Добавить ещё актив")],
+                [KeyboardButton(text="В главное меню")]
+            ],
+            resize_keyboard=True
+        )
+        await message.answer(
+            f"{EMOJI['chart']} {bold('Что дальше?')}",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
 
     except Exception as e:
         await message.answer(
@@ -327,6 +354,28 @@ async def process_image_url(message: types.Message, state: FSMContext):
     await state.clear()
 
 
+# Обработчик кнопки "Добавить ещё актив"
+@dp.message(F.text == "Добавить ещё актив")
+async def add_another_asset(message: types.Message, state: FSMContext):
+    await add_asset(message, state)
+
+
+# Обработчик кнопки "В главное меню"
+@dp.message(F.text == "В главное меню")
+async def back_to_main_menu(message: types.Message):
+    await show_start_menu(message)
+
+
+# Обработчик кнопки "Мои активы" (заглушка)
+@dp.message(F.text == "Мои активы")
+async def show_assets(message: types.Message):
+    await message.answer(
+        f"{EMOJI['warning']} {bold('Эта функция в разработке')}",
+        parse_mode="HTML"
+    )
+
+
+# Запуск бота
 async def main():
     # Подключение к Google Sheets
     try:
@@ -335,14 +384,17 @@ async def main():
         global sheet
         sheet = client.open_by_key(SPREADSHEET_ID).sheet1
         print(f"{EMOJI['done']} Успешное подключение к Google Sheets")
-    except FileNotFoundError:
-        print(f"{EMOJI['error']} Файл {SERVICE_ACCOUNT_FILE} не найден!")
-        exit()
-    except gspread.exceptions.APIError as e:
-        print(f"{EMOJI['error']} Ошибка API Google: {e}")
-        exit()
+
+        # Проверяем и создаем заголовки если нужно
+        if not sheet.get_all_values():
+            sheet.append_row([
+                "Название актива", "Количество", "Дата входа/покупки",
+                "Цена входа/покупки", "Дата выхода/продажи",
+                "Цена выхода/продажи", "Ссылка на изображение"
+            ])
+
     except Exception as e:
-        print(f"{EMOJI['error']} Неожиданная ошибка: {e}")
+        print(f"{EMOJI['error']} Ошибка подключения: {e}")
         exit()
 
     await dp.start_polling(bot)
